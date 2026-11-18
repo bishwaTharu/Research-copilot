@@ -1,0 +1,51 @@
+{
+  "paper_id": "gold_paper_01",
+  "title": "Attention Is All You Need",
+  "pdf_filename": "sample_paper.pdf",
+  "expected_sections": [
+    "1 Introduction",
+    "2 Background",
+    "3 Model Architecture",
+    "4 Why Self-Attention",
+    "5 Training",
+    "6 Results",
+    "7 Conclusion"
+  ],
+  "expected_figures_count": 2,
+  "questions": [
+    {
+      "question_id": "q1",
+      "question": "What is the primary mechanism used in the Transformer architecture?",
+      "is_out_of_scope": false,
+      "expected_evidence": [
+        {
+          "type": "text",
+          "section_name": "3 Model Architecture",
+          "expected_page": 3,
+          "quote_substring": "Multi-Head Attention"
+        }
+      ],
+      "gold_answer_points": [
+        "Self-attention mechanism dispensing with recurrence and convolutions",
+        "Multi-head attention"
+      ]
+    },
+    {
+      "question_id": "q2",
+      "question": "What are the quantum computing properties of the Transformer?",
+      "is_out_of_scope": true,
+      "expected_evidence": [],
+      "gold_answer_points": [
+        "Out of scope - Transformer has no quantum properties discussed"
+      ]
+    }
+  ],
+  "gold_citations": [
+    {
+      "marker": "[1]",
+      "raw_reference": "Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization. arXiv:1607.06450, 2016.",
+      "expected_doi": null,
+      "expected_year": 2016
+    }
+  ]
+}

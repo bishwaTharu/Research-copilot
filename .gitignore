@@ -1,0 +1,29 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Environment secrets (NFR-SEC-01)
+.env
+*.key
+*.pem
+
+# Local data & storage
+data/
+data/crops/
+data/uploads/
+data/states/
+*.db
+*.sqlite3
+
+# Reports & temporary test runs
+eval/reports/eval_report_*.json

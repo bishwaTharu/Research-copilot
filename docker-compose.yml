@@ -1,0 +1,89 @@
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: copilot_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - GATEWAY_BASE_URL=http://freellmapi:3001/v1
+      - GATEWAY_API_KEY=${GATEWAY_API_KEY:-freellmapi-token}
+      - MODEL_MODE=${MODEL_MODE:-auto}
+      - PINNED_DEFAULT_MODEL=${PINNED_DEFAULT_MODEL:-gpt-4o-mini}
+      - PINNED_VERIFIER_MODEL=${PINNED_VERIFIER_MODEL:-gpt-4o-mini}
+      - DATABASE_URL=postgresql+asyncpg://copilot_user:copilot_pass@postgres:5432/copilot
+      - GROBID_URL=http://grobid:8070
+      - CROSSREF_MAILTO=${CROSSREF_MAILTO:-research-copilot@example.edu}
+      - DATA_DIR=/app/data
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      - postgres
+      - freellmapi
+    networks:
+      - copilot_net
+
+  freellmapi:
+    image: freellmapi/gateway:latest
+    container_name: copilot_gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"  # Bound to localhost only (INT-11)
+    environment:
+      - PORT=3001
+      - GATEWAY_SECRET_KEY=${GATEWAY_SECRET_KEY:-change-this-in-production}
+    volumes:
+      - freellmapi_data:/app/data
+    networks:
+      - copilot_net
+
+  grobid:
+    image: lfoppiano/grobid:0.8.0
+    container_name: copilot_grobid
+    restart: unless-stopped
+    ports:
+      - "8070:8070"
+    networks:
+      - copilot_net
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: copilot_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=copilot_user
+      - POSTGRES_PASSWORD=copilot_pass
+      - POSTGRES_DB=copilot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - copilot_net
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: copilot_web
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    networks:
+      - copilot_net
+
+volumes:
+  app_data:
+  freellmapi_data:
+  pgdata:
+
+networks:
+  copilot_net:
+    driver: bridge
+
