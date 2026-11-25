@@ -30,6 +30,7 @@ from backend.app.schemas.domain import (
     CitationMention,
     Chunk,
     FigureItem,
+    FormulaItem,
     PaperDoc,
     PaperMetadata,
     ParseQualityReport,
@@ -343,6 +344,7 @@ class IngestionPipeline:
         blocks: List[TextBlock] = []
         figures: List[FigureItem] = []
         tables: List[TableItem] = []
+        formulas: List[FormulaItem] = []
 
         if mineru_cache_file.exists():
             with open(mineru_cache_file, "r", encoding="utf-8") as f:
@@ -354,11 +356,15 @@ class IngestionPipeline:
                 tables = [
                     TableItem.model_validate(tbl) for tbl in cached_mineru["tables"]
                 ]
+                formulas = [
+                    FormulaItem.model_validate(form)
+                    for form in cached_mineru.get("formulas", [])
+                ]
         else:
             logger.info(
                 f"[{paper_id}] Step 2: Extracting clean Markdown, LaTeX formulas & figures via MinerU..."
             )
-            blocks, figures, tables, _ = await self.mineru.process_pdf(
+            blocks, figures, tables, _, formulas = await self.mineru.process_pdf(
                 file_path, paper_id, self.crops_dir
             )
             with open(mineru_cache_file, "w", encoding="utf-8") as f:
@@ -367,6 +373,7 @@ class IngestionPipeline:
                         "blocks": [b.model_dump() for b in blocks],
                         "figures": [fig.model_dump() for fig in figures],
                         "tables": [tbl.model_dump() for tbl in tables],
+                        "formulas": [form.model_dump() for form in formulas],
                     },
                     f,
                     indent=2,
@@ -438,11 +445,19 @@ class IngestionPipeline:
         paper_doc = PaperDoc(
             metadata=metadata,
             blocks=blocks,
+            formulas=formulas,
             figures=figures,
             tables=tables,
             references=references,
             citation_mentions=citation_mentions,
         )
+
+        # Re-anchor existing researcher notes if re-parsing
+        try:
+            from backend.app.services.notes_service import reanchor_notes
+            reanchor_notes(paper_id, blocks)
+        except Exception as exc:
+            logger.debug(f"Notes re-anchoring skipped/failed: {exc}")
 
         with open(paper_doc_file, "w", encoding="utf-8") as f:
             f.write(paper_doc.model_dump_json(indent=2))
@@ -484,11 +499,13 @@ class IngestionPipeline:
             paper_id=paper_id,
             total_pages=metadata.total_pages,
             blocks_count=len(blocks),
+            formulas_count=len(formulas),
             figures_count=len(figures),
             tables_count=len(tables),
             references_count=len(references),
             tier_counts=tier_counts,
             warnings=metadata.warnings,
+            has_formulas=len(formulas) > 0,
             has_figures=len(figures) > 0,
             has_references=len(references) > 0,
             figure_summaries_pending=sum(

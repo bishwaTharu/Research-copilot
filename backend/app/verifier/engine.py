@@ -1,11 +1,14 @@
 """
-Verification Engine compliant with FR-VER-01 through FR-VER-06.
-Executes deterministic checks and NLI entailment judgements.
+Verification Engine compliant with FR-VER-01 through FR-VER-06 and Addendum v1.3.
+Executes deterministic checks (including formula_crop_valid and mention_in_block)
+and NLI entailment judgements.
 """
 
 from __future__ import annotations
 import json
+import os
 import re
+from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field
 
@@ -30,7 +33,7 @@ class EntailmentVerdict(BaseModel):
 class VerifierEngine:
     """
     Two-stage verifier:
-    Stage 1: Deterministic check suite (IDs, quotes, bbox geometry, DOIs).
+    Stage 1: Deterministic check suite (IDs, quotes, bbox geometry, DOIs, formula_crop_valid, mention_in_block).
     Stage 2: Model entailment check (pinned model).
     """
 
@@ -44,7 +47,7 @@ class VerifierEngine:
         self, claim: ClaimRecord, paper: PaperDoc
     ) -> VerificationChecks:
         """
-        Executes strict deterministic verification on evidence items (FR-VER-01).
+        Executes strict deterministic verification on evidence items (FR-VER-01, Addendum v1.3).
         """
         checks = VerificationChecks()
 
@@ -55,12 +58,18 @@ class VerifierEngine:
         all_quotes_match = True
         all_bboxes_valid = True
         all_dois_resolve = True
+        all_formula_crops_valid = True
+        all_mentions_in_block = True
 
         # Build lookup tables
         blocks_by_id = {b.block_id: b for b in paper.blocks}
         figures_by_id = {f.figure_id: f for f in paper.figures}
         tables_by_id = {t.table_id: t for t in paper.tables}
         refs_by_id = {r.reference_id: r for r in paper.references}
+        formulas_by_id = {f.formula_id: f for f in paper.formulas}
+
+        has_formula = False
+        has_ref = False
 
         for ev in claim.evidence:
             if ev.type == "text":
@@ -80,6 +89,22 @@ class VerifierEngine:
                     ):
                         all_bboxes_valid = False
 
+            elif ev.type == "formula":
+                has_formula = True
+                if ev.formula_id not in formulas_by_id:
+                    all_ids_exist = False
+                    all_formula_crops_valid = False
+                else:
+                    formula = formulas_by_id[ev.formula_id]
+                    # Check formula crop validity (Addendum v1.3)
+                    if formula.crop_path:
+                        crop_file = Path(settings.CROPS_DIR) / formula.crop_path
+                        if not crop_file.exists():
+                            all_formula_crops_valid = False
+                    # Check confidence threshold
+                    if formula.confidence < settings.FORMULA_CONFIDENCE_THRESHOLD:
+                        all_formula_crops_valid = False
+
             elif ev.type == "figure":
                 if ev.figure_id not in figures_by_id:
                     all_ids_exist = False
@@ -93,8 +118,10 @@ class VerifierEngine:
                     all_ids_exist = False
 
             elif ev.type == "ref":
+                has_ref = True
                 if ev.reference_id not in refs_by_id:
                     all_ids_exist = False
+                    all_mentions_in_block = False
                 else:
                     ref = refs_by_id[ev.reference_id]
                     # Check DOI validity if present
@@ -104,10 +131,25 @@ class VerifierEngine:
                         elif ref.resolution_status == "unresolved":
                             all_dois_resolve = False
 
+                    # Check mention_in_block: marker must lie inside cited block (Addendum v1.3 Section 3.1)
+                    if ev.block_id:
+                        block = blocks_by_id.get(ev.block_id)
+                        matching_mention = any(
+                            cm.reference_id == ev.reference_id and cm.block_id == ev.block_id
+                            for cm in paper.citation_mentions
+                        )
+                        if not matching_mention and block:
+                            # Check if marker text is directly present in the block
+                            marker = ev.marker or ref.marker or f"[{ev.reference_id}]"
+                            if marker not in block.text:
+                                all_mentions_in_block = False
+
         checks.ids_exist = all_ids_exist
         checks.quote_match = all_quotes_match
         checks.bbox_valid = all_bboxes_valid
         checks.doi_resolves = all_dois_resolve
+        checks.formula_crop_valid = all_formula_crops_valid if has_formula else True
+        checks.mention_in_block = all_mentions_in_block if has_ref else True
         return checks
 
     async def verify_claim(self, claim: ClaimRecord, paper: PaperDoc) -> ClaimRecord:
@@ -132,6 +174,14 @@ class VerifierEngine:
                 )
                 if block:
                     evidence_texts.append(f"[Block {ev.block_id}] {block.text}")
+            elif ev.type == "formula" and ev.formula_id:
+                formula = next(
+                    (f for f in paper.formulas if f.formula_id == ev.formula_id), None
+                )
+                if formula:
+                    evidence_texts.append(
+                        f"[Formula {formula.number}] LaTeX: {formula.latex}"
+                    )
             elif ev.type == "figure" and ev.figure_id:
                 fig = next(
                     (f for f in paper.figures if f.figure_id == ev.figure_id), None
@@ -185,13 +235,52 @@ class VerifierEngine:
             logger.warning(
                 f"Entailment check error on claim '{claim.claim[:40]}': {exc}"
             )
-            # Fallback to deterministic check result
             if checks.ids_exist and checks.quote_match:
                 claim.verdict = "supported"
             else:
                 claim.verdict = "partial"
 
         return claim
+
+    async def check_cited_work_support(
+        self, citing_statement: str, cited_text: str
+    ) -> Dict[str, Any]:
+        """
+        Optional check that the cited work full-text supports the author's statement (Addendum v1.3 Section 6.3).
+        Runs only on user request using the pinned verifier model.
+        """
+        prompt = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an academic citation verifier. Determine whether the cited work passage supports the author's statement citing it.\n"
+                    "Respond with a structured verdict ('supported', 'partial', or 'unsupported') and reasoning."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"AUTHOR CITING STATEMENT:\n{citing_statement}\n\nCITED WORK PASSAGE:\n{cited_text}",
+            },
+        ]
+        try:
+            res = await self.adapter.structured_completion(
+                messages=prompt,
+                schema=EntailmentVerdict,
+                stage="cited_work_support_check",
+                model=settings.PINNED_VERIFIER_MODEL,
+            )
+            return {
+                "verdict": res.verdict,
+                "reasoning": res.reasoning,
+                "supported": res.verdict == "supported",
+            }
+        except Exception as exc:
+            logger.warning(f"Support check failed: {exc}")
+            return {
+                "verdict": "unverified",
+                "reasoning": f"Could not perform support check: {exc}",
+                "supported": False,
+            }
 
     async def verify_answer(
         self, claims: List[ClaimRecord], paper: PaperDoc

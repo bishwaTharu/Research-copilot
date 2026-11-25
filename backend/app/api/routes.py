@@ -22,13 +22,19 @@ from backend.app.retrieval.embedder import local_embedder
 from backend.app.retrieval.hybrid import HybridSearchIndex
 from backend.app.schemas.domain import (
     AnswerRecord,
+    CitationVerificationResult,
     ClaimRecord,
+    EvidenceTrailItem,
     FeedbackRecord,
     FigureItem,
+    FormulaItem,
+    NoteRecord,
     PaperDoc,
     ParseQualityReport,
     ReferenceItem,
+    ReferenceReaderPayload,
 )
+from backend.app.services.citation_verifier_agent import citation_verifier_agent
 from backend.app.tools.layer import tool_layer
 from backend.app.verifier.engine import verifier_engine
 
@@ -58,6 +64,32 @@ class UploadResponse(BaseModel):
 
 class PrivacyUpdateRequest(BaseModel):
     privacy_setting: str  # "allow_remote" or "local_only"
+
+
+class NoteCreateRequest(BaseModel):
+    anchor_type: str = "block"  # "block", "formula", "figure", "table", "ref"
+    anchor_id: str
+    text: str
+    quote: str = ""
+    color: str = "yellow"
+    tags: List[str] = []
+
+
+class NoteUpdateRequest(BaseModel):
+    text: Optional[str] = None
+    color: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+class SupportCheckRequest(BaseModel):
+    citing_statement: str
+    cited_text: str
+
+
+class CitationVerifyRequest(BaseModel):
+    sentence: str
+    reference_id: Optional[str] = None
+    max_retries: int = 2
 
 
 @router.post(
@@ -94,6 +126,7 @@ async def upload_paper(
         chunks = pipeline.chunks_store.get(effective_paper_id, [])
         search_index = HybridSearchIndex(paper_doc, chunks, local_embedder)
         paper_indices[effective_paper_id] = search_index
+        suggested_questions_cache.pop(effective_paper_id, None)
         is_duplicate = (effective_paper_id != paper_id)
         return UploadResponse(
             paper_id=effective_paper_id,
@@ -168,22 +201,53 @@ async def get_paper_references(paper_id: str):
 
 
 def extract_suggested_questions(doc: PaperDoc) -> List[str]:
-    """Generates targeted research exploration questions based on paper headings, abstract and figures."""
+    """Generates targeted research exploration questions based on paper title, headings, formulas, figures, and citations."""
+    title = (doc.metadata.title or "").strip()
+    short_title = (title[:65] + "…") if len(title) > 65 else title
     questions: List[str] = [
-        "What is the primary contribution and hypothesis of this work?"
+        f"What is the primary contribution and hypothesis of \"{short_title}\"?"
+        if short_title and short_title.lower() != "untitled paper"
+        else "What is the primary contribution and hypothesis of this work?"
     ]
 
-    # Extract clean technical section headings
-    headings = []
+    # Extract clean technical section headings (from explicit heading blocks + section_path fallback)
+    headings: List[str] = []
     seen = set()
+    generic = {
+        "introduction",
+        "references",
+        "bibliography",
+        "conclusion",
+        "conclusions",
+        "abstract",
+        "document",
+        "fallback",
+        "related work",
+        "acknowledgements",
+        "acknowledgments",
+        "appendix",
+        "original research",
+        "research article",
+        "review article",
+        "preprint",
+        "a preprint",
+        "arxiv template",
+    }
+
+    def _add_heading(raw_h: str) -> None:
+        h_clean = re.sub(r"^(\d+(\.\d+)*|[IVX]+\.)\s*", "", raw_h.strip()).strip()
+        if h_clean and h_clean.lower() not in seen and 4 < len(h_clean) < 60:
+            seen.add(h_clean.lower())
+            headings.append(h_clean)
+
     for b in doc.blocks:
         if b.type == "heading" and len(b.text.strip()) > 3:
-            h_clean = re.sub(r"^(\d+(\.\d+)*|[IVX]+\.)\s*", "", b.text.strip()).strip()
-            if h_clean.lower() not in seen and 4 < len(h_clean) < 60:
-                seen.add(h_clean.lower())
-                headings.append(h_clean)
+            _add_heading(b.text)
+    if not headings:
+        for b in doc.blocks:
+            for seg in b.section_path or []:
+                _add_heading(seg)
 
-    generic = {"introduction", "references", "bibliography", "conclusion", "conclusions", "abstract", "document", "fallback", "related work"}
     technical_headings = [h for h in headings if h.lower() not in generic]
 
     if technical_headings:
@@ -192,11 +256,24 @@ def extract_suggested_questions(doc: PaperDoc) -> List[str]:
         questions.append("What methodology or technical architecture is proposed in this paper?")
 
     # Empirical evaluations / experiments
-    eval_headings = [h for h in technical_headings if any(k in h.lower() for k in ("eval", "experiment", "result", "benchmark", "study", "analysis"))]
+    eval_headings = [
+        h
+        for h in technical_headings
+        if any(
+            k in h.lower()
+            for k in ("eval", "experiment", "result", "benchmark", "study", "analysis", "ablation")
+        )
+    ]
     if eval_headings:
         questions.append(f"What key empirical results and benchmarks are reported in {eval_headings[0]}?")
     else:
         questions.append("What empirical evaluation benchmarks and baseline comparisons are reported?")
+
+    # Formula-grounded question if paper contains extracted formulas
+    if doc.formulas:
+        eq = doc.formulas[0]
+        eq_label = eq.number or eq.formula_id
+        questions.append(f"Explain the derivation and role of Equation {eq_label} (page {eq.page}).")
 
     # Figure or second technical aspect
     if doc.figures:
@@ -205,10 +282,25 @@ def extract_suggested_questions(doc: PaperDoc) -> List[str]:
     elif len(technical_headings) > 1:
         questions.append(f"What key findings or details are discussed regarding {technical_headings[1]}?")
 
-    # Stated limitations
-    questions.append("What are the primary limitations, failure modes, or threats to validity acknowledged?")
+    # Cited-work comparison if references exist
+    if doc.references:
+        top_ref = next((r for r in doc.references if r.title and len(r.title) > 10), None)
+        if top_ref and top_ref.title:
+            ref_title = (top_ref.title[:50] + "…") if len(top_ref.title) > 50 else top_ref.title
+            questions.append(f"How does this paper relate to cited work \"{ref_title}\" {top_ref.marker or ''}?".strip())
 
-    return questions
+    # Deduplicate and cap at 5 curated paper-specific prompts
+    deduped: List[str] = []
+    seen_q = set()
+    for q in questions:
+        if q.lower() not in seen_q:
+            seen_q.add(q.lower())
+            deduped.append(q)
+
+    if len(deduped) < 5:
+        deduped.append("What are the primary limitations, failure modes, or threats to validity acknowledged?")
+
+    return deduped[:5]
 
 
 @router.get("/papers/{paper_id}/suggested-questions", response_model=List[str])
@@ -501,6 +593,219 @@ async def submit_feedback(feedback: FeedbackRecord):
     """Stores user ratings or citation error reports for gold-set improvement (FR-UI-08)."""
     feedback_db.append(feedback)
     return {"status": "recorded", "feedback_count": len(feedback_db)}
+
+
+# ── Addendum v1.3: Evidence Trail, Formulas, Notes & Reference Reader ────────
+
+@router.get("/answers/{answer_id}/trail", response_model=List[EvidenceTrailItem])
+async def get_answer_trail(answer_id: str):
+    """
+    Returns the assembled Evidence Trail for an answer (Addendum v1.3 Section 6.3).
+    Includes paragraphs, formulas, figures/tables, and 'cited-here' references.
+    """
+    answer = answers_db.get(answer_id)
+    if not answer:
+        raise HTTPException(status_code=404, detail="Answer not found.")
+    doc = pipeline.docs_store.get(answer.paper_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Paper not found.")
+    from backend.app.orchestrator.agent import build_evidence_trail
+    return build_evidence_trail(answer, doc)
+
+
+@router.get("/papers/{paper_id}/formulas", response_model=List[FormulaItem])
+async def get_paper_formulas(paper_id: str):
+    """Returns all displayed formulas extracted from paper (Addendum v1.3 Section 6.3)."""
+    doc = pipeline.docs_store.get(paper_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Paper not found.")
+    return doc.formulas
+
+
+@router.get("/papers/{paper_id}/formulas/{formula_id}", response_model=FormulaItem)
+async def get_paper_formula(paper_id: str, formula_id: str):
+    """Returns a single formula record with LaTeX, crop, and confidence (Addendum v1.3 Section 6.3)."""
+    doc = pipeline.docs_store.get(paper_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Paper not found.")
+    for f in doc.formulas:
+        if f.formula_id == formula_id:
+            return f
+    raise HTTPException(status_code=404, detail=f"Formula {formula_id} not found.")
+
+
+@router.get("/references/{reference_id}/reader", response_model=ReferenceReaderPayload)
+async def get_reference_reader(reference_id: str, paper_id: Optional[str] = None):
+    """Returns Reference Reader payload (abstract, OA status, passages) (Addendum v1.3 Section 6.3)."""
+    ref, _ = tool_layer._find_ref(reference_id, paper_id)
+    if not ref:
+        raise HTTPException(status_code=404, detail=f"Reference {reference_id} not found.")
+    from backend.app.services.reference_reader import build_reader_payload
+    return build_reader_payload(ref)
+
+
+@router.post("/references/{reference_id}/fetch")
+async def fetch_reference_fulltext(
+    reference_id: str, paper_id: Optional[str] = None, citing_sentence: str = ""
+):
+    """
+    Fetches open-access full text of cited reference (Addendum v1.3 Section 6.3).
+    Privacy check: local_only papers block remote fetch.
+    """
+    ref, doc = tool_layer._find_ref(reference_id, paper_id)
+    if not ref:
+        raise HTTPException(status_code=404, detail=f"Reference {reference_id} not found.")
+    if doc and doc.metadata.privacy_setting == "local_only":
+        raise HTTPException(
+            status_code=403,
+            detail="Local-only privacy mode is active. Remote paper fetching is blocked."
+        )
+    from backend.app.services.reference_reader import fetch_and_cache
+    status_str, passages = await fetch_and_cache(ref, citing_sentence=citing_sentence)
+    return {
+        "reference_id": reference_id,
+        "fetch_status": status_str,
+        "passages": [p.model_dump() for p in passages],
+    }
+
+
+@router.get("/references/{reference_id}/fetch/status")
+async def get_reference_fetch_status(reference_id: str, paper_id: Optional[str] = None):
+    """Returns current fetch/parsing status for a reference."""
+    ref, _ = tool_layer._find_ref(reference_id, paper_id)
+    if not ref:
+        raise HTTPException(status_code=404, detail=f"Reference {reference_id} not found.")
+    from backend.app.services.reference_reader import build_reader_payload
+    payload = build_reader_payload(ref)
+    return {
+        "reference_id": reference_id,
+        "fetch_status": payload.fetch_status,
+        "fetch_message": payload.fetch_message,
+        "passages_count": len(payload.passages),
+    }
+
+
+@router.post("/references/{reference_id}/support-check")
+async def reference_support_check(reference_id: str, req: SupportCheckRequest):
+    """
+    Optional check: does the cited work passage support author's citing statement?
+    Uses pinned verifier model (Addendum v1.3 Section 6.3).
+    """
+    res = await verifier_engine.check_cited_work_support(
+        req.citing_statement, req.cited_text
+    )
+    return {"reference_id": reference_id, **res}
+
+
+@router.post(
+    "/papers/{paper_id}/verify-citation",
+    response_model=CitationVerificationResult,
+)
+async def verify_citation_agentic(paper_id: str, req: CitationVerifyRequest):
+    """
+    4-Step Agentic Citation Verification Pipeline:
+    1. Citation Extraction & Resolution
+    2. Paper B Retrieval (Semantic Scholar, OpenAlex, arXiv, Unpaywall + Paywall Abstract Fallback)
+    3. Semantic Search & LLM Verification with Self-Correction Loop
+    4. Structured Snippet, Page/Section, Confidence & Explanation
+    """
+    doc = pipeline.docs_store.get(paper_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Paper not found.")
+    return await citation_verifier_agent.verify_citation(
+        paper=doc,
+        sentence=req.sentence,
+        reference_id=req.reference_id,
+        max_retries=req.max_retries,
+    )
+
+
+@router.post("/papers/{paper_id}/verify-citation/stream")
+async def stream_verify_citation_agentic(paper_id: str, req: CitationVerifyRequest):
+    """
+    Streams live status steps of the 4-step Agentic Citation Verification workflow
+    over Server-Sent Events (SSE) so the UI remains responsive during retrieval & parsing.
+    """
+    doc = pipeline.docs_store.get(paper_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Paper not found.")
+
+    async def sse_generator():
+        async for evt in citation_verifier_agent.stream_verify_citation(
+            paper=doc,
+            sentence=req.sentence,
+            reference_id=req.reference_id,
+            max_retries=req.max_retries,
+        ):
+            yield f"data: {json.dumps(evt)}\n\n"
+
+    return StreamingResponse(sse_generator(), media_type="text/event-stream")
+
+
+# ── Notes Service Endpoints ──────────────────────────────────────────────────
+
+@router.get("/papers/{paper_id}/notes", response_model=List[NoteRecord])
+async def get_paper_notes(paper_id: str):
+    """Lists all researcher notes for a paper (Addendum v1.3 Section 6.3)."""
+    from backend.app.services.notes_service import list_notes
+    return list_notes(paper_id)
+
+
+@router.post("/papers/{paper_id}/notes", response_model=NoteRecord)
+async def create_paper_note(paper_id: str, req: NoteCreateRequest):
+    """Creates a new note anchored to a block, formula, figure, or ref (Addendum v1.3)."""
+    from backend.app.services.notes_service import create_note
+    return create_note(
+        paper_id=paper_id,
+        anchor_type=req.anchor_type,
+        anchor_id=req.anchor_id,
+        text=req.text,
+        quote=req.quote,
+        color=req.color,
+        tags=req.tags,
+    )
+
+
+@router.patch("/notes/{note_id}", response_model=NoteRecord)
+@router.put("/notes/{note_id}", response_model=NoteRecord)
+async def update_note_endpoint(note_id: str, req: NoteUpdateRequest, paper_id: Optional[str] = None):
+    """Updates a note's text, color, or tags (Addendum v1.3 Section 6.3)."""
+    from backend.app.services.notes_service import update_note
+    target_paper_id = paper_id
+    if not target_paper_id:
+        # Search across all papers
+        for pid in pipeline.docs_store.keys():
+            updated = update_note(pid, note_id, text=req.text, color=req.color, tags=req.tags)
+            if updated:
+                return updated
+        raise HTTPException(status_code=404, detail=f"Note {note_id} not found.")
+    updated = update_note(target_paper_id, note_id, text=req.text, color=req.color, tags=req.tags)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Note {note_id} not found.")
+    return updated
+
+
+@router.delete("/notes/{note_id}")
+async def delete_note_endpoint(note_id: str, paper_id: Optional[str] = None):
+    """Deletes a note (Addendum v1.3 Section 6.3)."""
+    from backend.app.services.notes_service import delete_note
+    if paper_id:
+        deleted = delete_note(paper_id, note_id)
+        if deleted:
+            return {"status": "deleted", "note_id": note_id}
+    else:
+        for pid in pipeline.docs_store.keys():
+            if delete_note(pid, note_id):
+                return {"status": "deleted", "note_id": note_id}
+    return {"status": "deleted", "note_id": note_id}
+
+
+@router.get("/papers/{paper_id}/notes/export")
+async def export_notes(paper_id: str):
+    """Exports paper notes in Markdown format (Addendum v1.3 Section 6.3)."""
+    from backend.app.services.notes_service import export_notes_markdown
+    md = export_notes_markdown(paper_id)
+    return {"paper_id": paper_id, "markdown": md}
 
 
 @router.get("/admin/llm-usage")

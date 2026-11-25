@@ -27,3 +27,7 @@ data/states/
 
 # Reports & temporary test runs
 eval/reports/eval_report_*.json
+frontend
+tests
+eval
+project_description.txt

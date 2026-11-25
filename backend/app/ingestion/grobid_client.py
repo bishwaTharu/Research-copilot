@@ -122,15 +122,20 @@ class GROBIDClient:
         for m in re.finditer(r"\[(\d{1,3}(?:[,\s–\-]+\d{1,3})*)\]", full_text):
             marker = m.group(0)
             nums = re.findall(r"\d+", marker)
+            sent_start = max(0, m.start() - 80)
+            sent_end = min(len(full_text), m.end() + 80)
+            sent = full_text[sent_start:sent_end].strip()
+            c_start = max(0, m.start() - sent_start)
+            c_end = min(len(sent), c_start + len(marker))
             for n in nums:
                 citation_mentions.append(
                     CitationMention(
                         paper_id=paper_id,
                         block_id="",
                         reference_id=f"r{n}",
-                        sentence=full_text[
-                            max(0, m.start() - 80) : min(len(full_text), m.end() + 80)
-                        ].strip(),
+                        sentence=sent,
+                        char_start=c_start,
+                        char_end=c_end,
                     )
                 )
 
@@ -286,6 +291,9 @@ class GROBIDClient:
                 sentence = "".join(p_el.itertext()).strip()[:300]
                 for ref_el in p_el.findall(".//tei:ref[@type='bibr']", _NS):
                     target = ref_el.get("target", "").lstrip("#")
+                    ref_text = _text(ref_el)
+                    c_start = sentence.find(ref_text) if ref_text else 0
+                    c_end = c_start + len(ref_text) if c_start >= 0 and ref_text else 0
                     if target in ref_id_map:
                         citation_mentions.append(
                             CitationMention(
@@ -293,6 +301,8 @@ class GROBIDClient:
                                 block_id=block_id,
                                 reference_id=ref_id_map[target],
                                 sentence=sentence,
+                                char_start=max(0, c_start),
+                                char_end=max(0, c_end),
                             )
                         )
 

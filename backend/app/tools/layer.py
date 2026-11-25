@@ -296,6 +296,105 @@ class ToolLayer:
             "retraction_details": ref.retraction_details,
         }
 
+    def search_formulas(
+        self,
+        paper_id: str,
+        query: str,
+        k: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """
+        Tool: search_formulas(paper_id, query, k) (Addendum v1.3 Section 6.3, 7).
+        Output: Formula IDs with number, page, crop path, LaTeX and confidence.
+        """
+        doc = self.docs_store.get(paper_id)
+        if not doc or not doc.formulas:
+            return []
+
+        q_tokens = set(re.findall(r"\w+", query.lower()))
+        results = []
+
+        for formula in doc.formulas:
+            # Score against LaTeX, number, and mentioning context
+            formula_text = f"{formula.number} {formula.latex}".lower()
+            for m in formula.mentions:
+                formula_text += " " + str(m.get("excerpt", "")).lower()
+
+            f_tokens = set(re.findall(r"\w+", formula_text))
+            score = len(q_tokens.intersection(f_tokens))
+
+            # Bonus score if query explicitly asks for formula number e.g. "eq 3" or "(3)"
+            if formula.number.strip("()").lower() in query.lower():
+                score += 5
+
+            results.append({
+                "type": "formula",
+                "formula_id": formula.formula_id,
+                "number": formula.number,
+                "page": formula.page,
+                "latex": formula.latex,
+                "crop_path": formula.crop_path,
+                "confidence": formula.confidence,
+                "score": float(score),
+            })
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:k]
+
+    def get_formula(
+        self, formula_id: str, paper_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Tool: get_formula(formula_id, paper_id) (Addendum v1.3 Section 6.3, 7).
+        Output: Formula record, LaTeX, crop path, and confidence.
+        """
+        docs = [self.docs_store[paper_id]] if (paper_id and paper_id in self.docs_store) else list(self.docs_store.values())
+        for doc in docs:
+            for f in doc.formulas:
+                if f.formula_id == formula_id:
+                    return {
+                        "formula_id": f.formula_id,
+                        "page": f.page,
+                        "bbox": f.bbox,
+                        "crop_path": f.crop_path,
+                        "latex": f.latex,
+                        "number": f.number,
+                        "confidence": f.confidence,
+                        "mentions": f.mentions,
+                    }
+        return None
+
+    def search_cited_text(
+        self, reference_id: str, query: str, k: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Tool: search_cited_text(reference_id, query, k) (Addendum v1.3 Section 6.3, 7).
+        Output: Passage IDs from a fetched cited work.
+        """
+        from backend.app.services.reference_reader import build_reader_payload
+        ref, _ = self._find_ref(reference_id)
+        if not ref:
+            return []
+        payload = build_reader_payload(ref)
+        if not payload.passages:
+            return []
+
+        q_tokens = set(re.findall(r"\w+", query.lower()))
+        scored = []
+        for p in payload.passages:
+            p_tokens = set(re.findall(r"\w+", p.passage_text.lower()))
+            overlap = len(q_tokens.intersection(p_tokens))
+            scored.append({
+                "reference_id": reference_id,
+                "passage_text": p.passage_text,
+                "page": p.page,
+                "section": p.section,
+                "match_score": p.match_score,
+                "score": float(overlap),
+                "label": p.label,
+            })
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:k]
+
     def _find_ref(
         self, reference_id: str, paper_id: Optional[str] = None
     ) -> tuple[Optional[ReferenceItem], Optional[PaperDoc]]:

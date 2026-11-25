@@ -71,10 +71,10 @@ crops_path = Path(settings.CROPS_DIR)
 crops_path.mkdir(parents=True, exist_ok=True)
 app.mount("/crops", StaticFiles(directory=str(crops_path)), name="crops")
 
-# Mount web UI static files
-static_dir = Path(__file__).parent / "static"
-static_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+# Optional frontend dist mounting if built
+frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+if frontend_dist.exists():
+    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
 
 # Include versioned API routers
 app.include_router(api_v1_router, prefix=settings.API_PREFIX)
@@ -82,17 +82,33 @@ app.include_router(api_v1_router, prefix=settings.API_PREFIX)
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
+    logo_file = frontend_dist / "logo.jpg"
+    if logo_file.exists():
+        return FileResponse(str(logo_file), media_type="image/jpeg")
     return Response(status_code=204)
+
+
+@app.get("/logo.jpg", include_in_schema=False)
+async def serve_logo():
+    for candidate in (
+        frontend_dist / "logo.jpg",
+        frontend_dist.parent / "public" / "logo.jpg",
+    ):
+        if candidate.exists():
+            return FileResponse(str(candidate), media_type="image/jpeg")
+    return Response(status_code=404)
 
 
 @app.get("/")
 async def root():
-    index_file = static_dir / "index.html"
-    if index_file.exists():
-        return FileResponse(str(index_file))
+    if frontend_dist.exists():
+        index_file = frontend_dist / "index.html"
+        if index_file.exists():
+            return FileResponse(str(index_file))
     return {
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "docs": f"{settings.API_PREFIX}/docs",
         "status": "online",
+        "frontend": "Dedicated React + Tailwind CSS + TypeScript client available under /frontend",
     }

@@ -1,6 +1,6 @@
 """
 Application settings and configuration management using Pydantic Settings.
-Compliant with SRS Section 4, 13.2 and INT-01 through INT-14.
+Compliant with SRS Section 4, 13.2, INT-01 through INT-14, and Addendum v1.3.
 """
 
 from typing import List, Literal, Optional
@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     UPLOADS_DIR: str = "./data/uploads"
     CROPS_DIR: str = "./data/crops"
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/copilot.db"
+
+    # Notes storage (Addendum v1.3)
+    NOTES_DIR: str = "./data/notes"
+
+    # Cited works cache (Addendum v1.3)
+    CITED_WORKS_DIR: str = "./data/cited_works"
+    MAX_CITED_WORK_SIZE_MB: int = 20
+    CITED_WORK_FETCH_TIMEOUT: int = 30
+
+    # Formula extraction (Addendum v1.3)
+    FORMULA_CONFIDENCE_THRESHOLD: float = 0.7
 
     # Privacy Settings (INT-09, NFR-PRIV-01)
     PRIVACY_DEFAULT: Literal["allow_remote", "local_only"] = "allow_remote"
