@@ -1,9 +1,32 @@
 [project]
 name = "research-copilot"
 version = "0.1.0"
-description = "Grounded multimodal research co-pilot with figure evidence and traceable citations."
+description = "Open-source multimodal AI research paper assistant with audited PDF grounding, formula inspection, and 4-step agentic citation verification."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
+keywords = [
+    "research-copilot",
+    "ai-research-assistant",
+    "scientific-rag",
+    "citation-verification",
+    "pdf-qa",
+    "grobid",
+    "mineru",
+    "pymupdf",
+    "fastapi",
+    "semantic-scholar",
+    "openalex",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
