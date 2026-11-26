@@ -1,9 +1,15 @@
-# Multimodal Research Co-pilot
+<p align="center">
+  <img src="docs/assets/logo.jpg" alt="Research Copilot Logo" width="280" />
+</p>
 
-[![Test Suite](https://img.shields.io/badge/pytest-15%20passed-brightgreen)](#testing)
-[![Evaluation Benchmark](https://img.shields.io/badge/gold--set%20benchmark-100%25%20passed-blue)](#evaluation-harness)
-[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](pyproject.toml)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+<h1 align="center">Multimodal Research Co-pilot</h1>
+
+<p align="center">
+  <a href="#testing"><img src="https://img.shields.io/badge/pytest-15%20passed-brightgreen" alt="Test Suite" /></a>
+  <a href="#evaluation-harness"><img src="https://img.shields.io/badge/gold--set%20benchmark-100%25%20passed-blue" alt="Evaluation Benchmark" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue" alt="Python" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
+</p>
 
 > **Grounded answers about research papers, with figure evidence and traceable citations.** Built incrementally following Agile/Scrum and the Software Requirements Specification (SRS v1.0).
 
