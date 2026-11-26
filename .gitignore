@@ -31,3 +31,4 @@ frontend
 tests
 eval
 project_description.txt
+.deps/

@@ -3,7 +3,7 @@
 [![Test Suite](https://img.shields.io/badge/pytest-15%20passed-brightgreen)](#testing)
 [![Evaluation Benchmark](https://img.shields.io/badge/gold--set%20benchmark-100%25%20passed-blue)](#evaluation-harness)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](pyproject.toml)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 > **Grounded answers about research papers, with figure evidence and traceable citations.** Built incrementally following Agile/Scrum and the Software Requirements Specification (SRS v1.0).
 
@@ -92,32 +92,7 @@ Generated reports are versioned under `eval/reports/`.
 
 ---
 
-## 📁 Repository Structure
+## 📄 License
 
-```
-research-copilot/
-├── backend/
-│   ├── app/
-│   │   ├── api/             # FastAPI REST endpoints (/papers, /ask, /feedback, etc.)
-│   │   ├── core/            # Config, JSON logging with correlation IDs
-│   │   ├── ingestion/       # PDF layout parser (PyMuPDF) & resumable pipeline
-│   │   ├── llm/             # Resilient FreeLLMAPI adapter with retries & caching
-│   │   ├── orchestrator/    # Grounded Q&A agent composing evidence IDs
-│   │   ├── references/      # CrossRef / OpenAlex resolver with local cache
-│   │   ├── retrieval/       # Local embedder & BM25 hybrid search index
-│   │   ├── schemas/         # Canonical PaperDoc, EvidenceRecord, ClaimRecord
-│   │   ├── static/          # Two-pane web UI with bounding box highlights
-│   │   └── verifier/        # Deterministic checks & NLI entailment audit
-│   └── Dockerfile
-├── docs/
-│   └── adrs/                # Architecture Decision Records (ADR-1 to ADR-5)
-├── eval/
-│   ├── gold_set/            # Benchmark datasets & schemas
-│   ├── reports/             # Output benchmark evaluation runs
-│   └── runner.py            # CLI evaluation benchmark runner
-├── tests/                   # Pytest test suite (15 tests passing)
-├── docker-compose.yml       # Production-like multi-container setup
-├── pyproject.toml
-└── README.md
-```
+This project is licensed under the **Apache License 2.0** — see the [LICENSE](LICENSE) file for details.
 
